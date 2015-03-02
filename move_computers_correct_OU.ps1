@@ -3,7 +3,7 @@
 ################################################################################
  
 # Requires Active Directory 2008 R2 and the PowerShell ActiveDirectory module
-
+# Security computers are filtered out
 
  
 #####################
