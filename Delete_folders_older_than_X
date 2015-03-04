@@ -1,0 +1,9 @@
+@echo off
+:: folder path
+set del_path=c:\users
+ 
+:: min age of files and folders to delete
+set max_days=365
+ 
+:: remove sub directories from %del_path% 
+forfiles -p %dump_path% -d -%max_days% -c "cmd /c IF @isdir == TRUE rd /S /Q @path"
