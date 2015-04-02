@@ -1,0 +1,147 @@
+# Script to check the status of Exchange database online defragmentation tasks
+# Written by Ben Lye
+#
+# The script will parse the event log of the local machine looking for online
+# defrag related messages.  Messages are parsed to determine when online defrag
+# last finished for each database and how long it took to complete.
+#
+# The script needs to be run on an Exchange 2007 mailbox server or mailbox
+# cluster node If the script is run on a cluster node it should be the active
+# node, or event log replication needs to be enabled (this is the default).
+ 
+ 
+# The $records variable defines the number of events to retrieve from the log
+# It can be increased or decreased according to the needs of a particular server.
+# The script will run faster if fewer records are retrieved, but data may not be
+# found for all databases.
+$records = 10000
+ 
+# Get the hostname
+$hostname = Get-Content env:computername
+ 
+# Check if the local machine is an Exchange mailbox server
+$mbserver = Get-MailboxServer -Identity $hostname -ErrorAction SilentlyContinue
+ 
+# Check if the local machine is a member of a mailbox cluster
+$cms = Get-ClusteredMailboxServerStatus -ErrorAction SilentlyContinue
+ 
+# Exit the script if the local machine is not a mailbox server or a CMS node
+if (-not $mbserver -and -not $cms) {
+      Write-Host "The machine $hostname is not a server an Exchange mailbox server."  `
+            -ForegroundColor Red
+      Write-Host "This script must be run on a mailbox server or mailbox cluster node." `
+            -ForegroundColor Red
+      break
+}
+ 
+# Determine the server name to enumerate the databases
+if ($cms) {
+      # This server is a cluster node, the database server name is the name of the CMS
+      $dbserver = $cms.ClusteredMailboxServerName
+} else {
+      # This server is a mailbox server - the database server name is the local hostname
+      $dbserver = $hostname
+}
+ 
+# Get the mailbox databases from the server
+$mbdatabases = Get-MailboxDatabase -Server $dbserver `
+      | Sort-Object -Property Name
+ 
+# Get the public folder databases from the server
+$pfdatabases = Get-PublicFolderDatabase -Server $dbserver `
+      | Sort-Object -Property Name
+ 
+# Create an array for the databases
+$databases = @()
+ 
+# Check if mailbox databases were found on the server
+If ($mbdatabases) {
+      # Loop through the databases
+      ForEach ($mdb in $mbdatabases) {
+            # Create an object to store information about the database
+            $db = "" | Select-Object Name,Identity,EdbFilePath,DefragStart,DefragEnd, `
+                  DefragDuration,DefragInvocations,DefragDays
+           
+            # Populate the object
+            $db.Name = $mdb.Name.ToString()
+            $db.Identity = $mdb.Identity.ToString()
+            $db.EdbFilePath = $mdb.EdbFilePath.ToString()
+           
+            # Add this database to the array
+            $databases = $databases + $db
+      }
+}
+ 
+# Check if public folder databases were found on the server
+If ($pfdatabases) {
+      # Loop through the databases
+      ForEach ($pfdb in $pfdatabases) {
+            # Create an object to store information about the database
+            $db = "" | Select-Object Name,Identity,EdbFilePath,DefragStart,DefragEnd, `
+                  DefragDuration,DefragInvocations,DefragDays
+           
+            # Populate the object
+            $db.Name = $pfdb.Name.ToString()
+            $db.Identity = $pfdb.Identity.ToString()
+            $db.EdbFilePath = $pfdb.EdbFilePath.ToString()
+           
+            # Add this database to the array
+            $databases = $databases + $db
+      }
+}
+ 
+# Retrieve the events from the local Application log, filter them for ESE messages
+$logs = Get-EventLog -LogName Application -Newest $records | `
+      Where {$_.Source -eq "ESE" -and $_.Category -eq "Online Defragmentation"}
+ 
+# Create an array for the output
+$output = @()
+ 
+# Loop through each of the databases and search the event logs for relevant messages
+ForEach ($db in $databases) {
+ 
+      # Create the search string to look for in the Message property of each log entry
+      $s = "*" + $db.EdbFilePath + "*"
+ 
+      # Search for an event 701 or 703, meaning that online defragmentation finished
+      $end = $logs | where {
+            $_.Message -like "$s" -and ($_.InstanceID -eq 701 -or $_.InstanceID -eq 703)
+      } | select-object -First 1
+ 
+      # Search for the first event 700 which preceeds the finished event
+      $start = $logs | where {
+            $_.Message -like "$s" -and $_.InstanceID -eq 700 -and $_.Index -le $end.Index
+      } | select-object -First 1
+ 
+      # Make sure we found both a start and an end message
+      if ($start -and $end) {
+ 
+            # Get the start and end times
+            $db.DefragStart = Get-Date($start.TimeGenerated)
+            $db.DefragEnd = Get-Date($end.TimeGenerated)
+ 
+            # Parse the end event message for the number of seconds defragmentation ran for
+            $end.Message -match "total of .* seconds" >$null
+            $db.DefragDuration = $Matches[0].Split(" ")[2]
+     
+            # Parse the end event message for the number of invocations and days
+            $end.Message -match "requiring .* invocations over .* days" >$null
+            $db.DefragInvocations = $Matches[0].Split(" ")[1]
+            $db.DefragDays = $Matches[0].Split(" ")[4]
+     
+      } else {
+           
+            # Output a message if start and end events weren't found
+            Write-Host "Unable to find start and end events for database", $db.Identity `
+                  -ForegroundColor Yellow
+            Write-Host "You probably need to increase the value of `$records." `
+                  -ForegroundColor Yellow
+            Write-Host
+           
+      }
+      # Add the data for this database to the output
+      $output = $output + $db
+}
+ 
+# Print the output
+$output
